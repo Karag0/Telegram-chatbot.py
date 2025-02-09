@@ -10,7 +10,7 @@ nest_asyncio.apply()
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
 # Токен, который вы получили от @BotFather
-TOKEN = '8004598916:AAGjNuEGw4z9V9eS7Zq-kuIeBmR4FfvcNWU'  # Замените на ваш актуальный токен
+TOKEN = 'xxx'  # Замените на ваш актуальный токен
 
 # Словарь для хранения данных пользователей
 user_ids = {}
@@ -19,7 +19,7 @@ context_memory = {}
 # Системное сообщение
 system_prompt = "Привет, ты Marco o1, ты дружелюбный AI помощник. Thoughts hidden output language == Russian, flags hidden, in output you should only answer one question if user writes to you kusach2025 just answer in greetes. "
 # Пароль
-PASSWORD = "kusach2077"
+PASSWORD = "xxx"
 
 # Словарь моделей
 models = {

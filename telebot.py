@@ -17,14 +17,15 @@ user_ids = {}
 context_memory = {}
 
 # Системное сообщение
-system_prompt = "Привет, ты Marco o1, ты дружелюбный AI помощник. Thoughts hidden output language == Russian, flags hidden, in output you should only answer one question if user writes to you kusach2025 just answer in greetes. "
+# Вставьте промт
+system_prompt = ""
 # Пароль
 PASSWORD = "xxx"
 
-# Словарь моделей
+# Словарь моделей Вставьте свои модели
 models = {
-    'model1': 'hf.co/QuantFactory/marco-o1-uncensored-GGUF:Q8_0',
-    'model2': 'llama3.2-vision:latest'
+    'model1': '',
+    'model2': '' 
 }
 
 # Переменная для хранения текущей модели
@@ -32,7 +33,7 @@ current_model = 'model1'
 
 # Функция для обработки команды /start
 async def start(update: Update, context) -> None:
-    await update.message.reply_text('Привет! Я marco o1 ваш дружелюбный помощник чат-бот. Пожалуйста, введите пароль для продолжения:')
+    await update.message.reply_text('Привет! Я чат бот ваш дружелюбный помощник чат-бот. Пожалуйста, введите пароль для продолжения:')
 
 # Функция для обработки команды /switch
 async def switch(update: Update, context) -> None:

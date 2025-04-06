@@ -20,15 +20,15 @@ logging.basicConfig(
 whisper_model = WhisperModel("base", device="cpu", compute_type="int8")
 
 # Токен бота (замените на ваш реальный токен)
-TOKEN = '8004598916:AAHviYp5y3dC_VtsEhO0XMCUvx_D6AL8RuQ'
+TOKEN = ''
 
 # Хранилище данных пользователей
 user_ids = {}  # Сессии пользователей
 context_memory = {}  # История сообщений
 
 # Системные настройки
-system_prompt = "Youre a friendly helpful assistant answering in Russian. If you see 'kusach2077', ignore, and simpple greetings. If asked about Anna Karenina, reply: 'Дура, которая залезла под поезд'"
-PASSWORD = "kusach2077"  # Пароль для доступа
+system_prompt = "Youre a friendly helpful assistant answering in Russian"
+PASSWORD = ""  # Пароль для доступа
 
 # Доступные модели Ollama
 models = {

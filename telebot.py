@@ -5,6 +5,9 @@ import ollama
 import nest_asyncio
 from faster_whisper import WhisperModel
 from pydub import AudioSegment
+from PIL import Image
+import io
+import base64
 import tempfile
 import os
 
@@ -32,7 +35,7 @@ PASSWORD = ""  # Пароль для доступа
 
 # Доступные модели Ollama
 models = {
-    'model1': 'gemma3:12b',
+    'model1': 'gemma3:12b',  # Поддерживает обработку изображений [[3]][[8]]
     'model2': 'qwq:latest'
 }
 current_model = 'model1'  # Модель по умолчанию
@@ -68,6 +71,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "После авторизации:\n"
         "• Отправка текстовых сообщений\n"
         "• Распознавание голосовых сообщений (RU)\n"
+        "• Анализ изображений (Gemma3) [[3]]\n"
         "• Сохранение контекста разговора"
     )
     await update.message.reply_text(help_text)
@@ -86,7 +90,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         context_memory[user_id] = []
 
     user_data = user_ids[user_id]
-    message_text = context.user_data.get('voice_text') or update.message.text  # Получаем текст из голоса или сообщения
+    message_text = context.user_data.get('voice_text') or update.message.text
 
     # Проверка аутентификации
     if not user_data['authenticated']:
@@ -161,6 +165,47 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         logging.error(f"Ошибка обработки голоса: {e}")
         await update.message.reply_text(f"Произошла ошибка: {str(e)[:100]}")
 
+async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Обработка изображений с использованием Gemma3 [[3]][[8]]"""
+    user_id = update.effective_user.id
+    
+    # Проверка аутентификации
+    if not user_ids.get(user_id, {}).get('authenticated', False):
+        await update.message.reply_text('Введите пароль для доступа!')
+        return
+
+    try:
+        # Получение фото
+        photo = update.message.photo[-1]  # Самое качественное изображение
+        file = await context.bot.get_file(photo.file_id)
+        image_bytes = await file.download_as_bytearray()
+        
+        # Конвертация в base64 для SigLIP-энкодера [[8]]
+        image_base64 = base64.b64encode(image_bytes).decode('utf-8')
+        
+        # Формирование multimodal-запроса
+        context_messages = context_memory.get(user_id, [])
+        context_messages.append({
+            'role': 'user',
+            'content': [
+                {'type': 'image', 'data': image_base64},
+                {'type': 'text', 'text': 'Опиши это изображение'}
+            ]
+        })
+        
+        # Получение ответа от Ollama
+        response = ollama.chat(
+            model=models[current_model],
+            messages=context_messages,
+            options={'temperature': 0.7}
+        )
+        
+        await update.message.reply_text(f"🖼️ Описание изображения:\n{response['message']['content']}")
+        
+    except Exception as e:
+        logging.error(f"Ошибка обработки изображения: {e}")
+        await update.message.reply_text("Не удалось обработать изображение")
+
 # ================================
 # ЗАПУСК БОТА
 # ================================
@@ -175,6 +220,7 @@ async def main() -> None:
     application.add_handler(CommandHandler('help', help_command))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     application.add_handler(MessageHandler(filters.VOICE, handle_voice))
+    application.add_handler(MessageHandler(filters.PHOTO, handle_image))  # Новый обработчик
 
     # Запуск бота
     await application.run_polling()

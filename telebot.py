@@ -1,6 +1,7 @@
 import logging
 from telegram import Update 
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes 
+from telegram import Update, InputFile
 import ollama
 import nest_asyncio
 from faster_whisper import WhisperModel
@@ -10,7 +11,8 @@ import io
 import base64
 import tempfile
 import os
-
+import aiohttp
+import requests
 nest_asyncio.apply()  # Фикс для работы asyncio в Jupyter/некоторых средах
 
 # Настройка логирования
@@ -23,15 +25,15 @@ logging.basicConfig(
 whisper_model = WhisperModel("base", device="cpu", compute_type="int8")
 
 # Токен бота (замените на ваш реальный токен)
-TOKEN = ''
+TOKEN = 'x'
 
 # Хранилище данных пользователей
 user_ids = {}  # Сессии пользователей
 context_memory = {}  # История сообщений
 
 # Системные настройки
-system_prompt = "Youre a friendly helpful assistant answering in Russian"
-PASSWORD = ""  # Пароль для доступа
+system_prompt = "ваш системный промт"
+PASSWORD = "x"  # Пароль для доступа
 
 # Доступные модели Ollama
 models = {
@@ -205,7 +207,80 @@ async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     except Exception as e:
         logging.error(f"Ошибка обработки изображения: {e}")
         await update.message.reply_text("Не удалось обработать изображение")
+async def draw(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.effective_user.id
+    logging.info(f"Draw command from {user_id}")
 
+    if user_id not in user_ids or not user_ids[user_id]['authenticated']:
+        await update.message.reply_text('🔒 Требуется авторизация через /start')
+        return
+
+    if not context.args:
+        await update.message.reply_text('📝 Формат: /d [описание изображения]')
+        return
+
+    prompt = ' '.join(context.args)
+    logging.info(f"Генерация для промпта: {prompt}")
+
+    payload = {
+        "prompt": prompt,
+        "negative_prompt": "text, watermark, low quality",
+        "steps": 20,
+        "sampler_name": "Euler a",
+        "width": 1024,
+        "height": 1024,
+        "override_settings": {
+            "sd_model_checkpoint": "sdXL_v10VAEFix.safetensors [e6bb9ea85b]"
+        }
+    }
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            # Проверка доступности моделей
+            async with session.get('http://localhost:7860/sdapi/v1/sd-models') as model_check:
+                if model_check.status != 200:
+                    await update.message.reply_text('⚠️ Модель SD не загружена')
+                    return
+
+            # Основной запрос
+            async with session.post(
+                'http://localhost:7860/sdapi/v1/txt2img',
+                json=payload,
+                timeout=300
+            ) as response:
+                
+                logging.info(f"API Response: {response.status}")
+                
+                if response.status != 200:
+                    error = await response.text()
+                    logging.error(f"API Error: {error}")
+                    await update.message.reply_text(f'❌ Ошибка API: {response.status}')
+                    return
+
+                data = await response.json()
+                
+                if not data.get('images'):
+                    await update.message.reply_text('🖼️ Пустой ответ от генератора')
+                    return
+
+                image_data = base64.b64decode(data['images'][0])
+                
+                with io.BytesIO() as img_buffer:
+                    Image.open(io.BytesIO(image_data)).save(img_buffer, format='PNG')
+                    img_buffer.seek(0)
+                    
+                    await update.message.reply_photo(
+                        photo=InputFile(img_buffer, filename='art.png'),
+                        caption=f'🎨 {prompt[:100]}...'
+                    )
+                    logging.info("Изображение успешно отправлено")
+
+    except asyncio.TimeoutError:
+        logging.warning("Таймаут генерации")
+        await update.message.reply_text('⏳ Слишком долгая генерация, попробуйте позже')
+    except Exception as e:
+        logging.error(f"Critical Draw Error: {str(e)}", exc_info=True)
+        await update.message.reply_text('🔥 Ошибка в процессе генерации')
 # ================================
 # ЗАПУСК БОТА
 # ================================
@@ -221,7 +296,7 @@ async def main() -> None:
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     application.add_handler(MessageHandler(filters.VOICE, handle_voice))
     application.add_handler(MessageHandler(filters.PHOTO, handle_image))  # Новый обработчик
-
+    application.add_handler(CommandHandler('d', draw))
     # Запуск бота
     await application.run_polling()
 

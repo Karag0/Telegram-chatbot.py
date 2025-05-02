@@ -210,7 +210,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if user_id not in context_memory:
         context_memory[user_id] = [{'role': 'system', 'content': system_prompt}]
     # Добавление метки мышления для Qwen3
-    if user['model'] == '2':  # Qwen3
+    if user['model'] == '1':  # Qwen3
         if user['think_mode']:
             message_text = f"[THINK] {message_text}"
         else:

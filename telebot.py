@@ -26,19 +26,19 @@ logging.basicConfig(
 whisper_model = WhisperModel("base", device="cpu", compute_type="int8")
 
 # Токен бота
-TOKEN = 'x' #Введите ваш токен
+TOKEN = '' #Замените на ваш токен
 
 # Файл для сохранения данных пользователей
 USER_DATA_FILE = 'user_data.json'
 
 # Системные настройки
 system_prompt = "You're a friendly helpful assistant answering in Russian"
-PASSWORD = "x"  # Пароль для доступа
+PASSWORD = "x"  # Пароль для доступа, замените на свой
 
 # Доступные модели Ollama
 MODELS = {
-    '1': 'gemma3:12b',  # Поддерживает обработку изображений
-    '2': 'qwen3:14b'
+    '1': 'qwen3:14b',  # Теперь по умолчанию
+    '2': 'gemma3:12b'
 }
 
 # Загрузка данных пользователей из файла
@@ -66,19 +66,17 @@ context_memory = {}  # История сообщений
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработчик команды /start"""
     user_id = str(update.effective_user.id)
-    
     # Инициализация данных пользователя
     if user_id not in user_data:
         user_data[user_id] = {
             'authenticated': False,
             'model': '1',
             'think_mode': False,
-            'temperature': 0.7
+            'temperature': 0.7,
+            'context_size': 21  # Новое поле
         }
         save_user_data(user_data)
-    
     user = user_data[user_id]
-    
     if user['authenticated']:
         name = user.get('name', 'пользователь')
         await update.message.reply_text(f'👋 С возвращением, {name}! Можете задавать вопросы.')
@@ -88,17 +86,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def switch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработчик смены модели /switch [1/2]"""
     user_id = str(update.effective_user.id)
-    
     if user_id not in user_data or not user_data[user_id]['authenticated']:
         await update.message.reply_text('🔒 Сначала авторизуйтесь')
         return
-        
     if not context.args:
         current_model = user_data[user_id]['model']
         model_name = MODELS[current_model]
         await update.message.reply_text(f'🧠 Текущая модель: {model_name}')
         return
-    
     model_choice = context.args[0]
     if model_choice in ['1', '2']:
         user_data[user_id]['model'] = model_choice
@@ -111,16 +106,13 @@ async def switch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def set_thinking_mode(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Настройка режима мышления через /think [0/1]"""
     user_id = str(update.effective_user.id)
-    
     if user_id not in user_data or not user_data[user_id]['authenticated']:
         await update.message.reply_text('🔒 Сначала авторизуйтесь')
         return
-        
     if not context.args:
         mode = "🧠 Мышление: ВКЛ" if user_data[user_id]['think_mode'] else "🧠 Мышление: ВЫКЛ"
-        await update.message.reply_text(f"{mode}\n\nДля изменения: /think [0/1]")
+        await update.message.reply_text(f"{mode}\nДля изменения: /think [0/1]")
         return
-        
     mode_arg = context.args[0]
     if mode_arg == '1':
         user_data[user_id]['think_mode'] = True
@@ -136,16 +128,13 @@ async def set_thinking_mode(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 async def set_temperature(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Настройка температуры генерации"""
     user_id = str(update.effective_user.id)
-    
     if user_id not in user_data or not user_data[user_id]['authenticated']:
         await update.message.reply_text('🔒 Сначала авторизуйтесь')
         return
-        
     if not context.args:
         temp = user_data[user_id]['temperature']
         await update.message.reply_text(f'🌡️ Текущая температура: {temp}')
         return
-        
     try:
         temp = float(context.args[0])
         if 0 <= temp <= 1:
@@ -157,22 +146,41 @@ async def set_temperature(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     except ValueError:
         await update.message.reply_text('⚠️ Укажите числовое значение')
 
+async def set_context_size(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Настройка размера контекстной памяти /cs [2-50]"""
+    user_id = str(update.effective_user.id)
+    if user_id not in user_data or not user_data[user_id]['authenticated']:
+        await update.message.reply_text('🔒 Сначала авторизуйтесь')
+        return
+    if not context.args:
+        size = user_data[user_id]['context_size']
+        await update.message.reply_text(f'💾 Размер контекста: {size}')
+        return
+    try:
+        new_size = int(context.args[0])
+        if 2 <= new_size <= 50:
+            user_data[user_id]['context_size'] = new_size
+            save_user_data(user_data)
+            await update.message.reply_text(f'✅ Размер контекста изменен на {new_size}')
+        else:
+            await update.message.reply_text('⚠️ Допустимый диапазон: от 2 до 50')
+    except ValueError:
+        await update.message.reply_text('⚠️ Укажите числовое значение')
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработка текстовых сообщений"""
     user_id = str(update.effective_user.id)
-    
     # Инициализация данных пользователя
     if user_id not in user_data:
         user_data[user_id] = {
             'authenticated': False,
             'model': '1',
             'think_mode': False,
-            'temperature': 0.7
+            'temperature': 0.7,
+            'context_size': 21
         }
         save_user_data(user_data)
-    
     user = user_data[user_id]
-    
     # Проверка аутентификации
     if not user['authenticated']:
         message_text = update.message.text
@@ -181,39 +189,33 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             user['name'] = None  # Флаг для запроса имени
             context_memory[user_id] = [{'role': 'system', 'content': system_prompt}]
             save_user_data(user_data)
-            await update.message.reply_text('✅ Пароль принят!\n\n📝 Введите ваше имя:')
+            await update.message.reply_text('✅ Пароль принят!\n📝 Введите ваше имя:')
         else:
             await update.message.reply_text('❌ Неверный пароль')
         return
-    
     # Обработка имени
     if user.get('name') is None:
         user['name'] = update.message.text
         save_user_data(user_data)
         await update.message.reply_text(f'👋 Рад знакомству, {user["name"]}! Теперь вы можете задавать вопросы или просто общаться со мной!')
         return
-
     # Обработка сообщения
     message_text = context.user_data.get('voice_text') or update.message.text
-    
     # Подготовка контекста
     if user_id not in context_memory:
         context_memory[user_id] = [{'role': 'system', 'content': system_prompt}]
-    
     # Добавление метки мышления для Qwen3
     if user['model'] == '2':  # Qwen3
         if user['think_mode']:
             message_text = f"[THINK] {message_text}"
         else:
             message_text = f"[NO_THINK] {message_text}"
-    
     # Обновление контекста
     context_memory[user_id].append({'role': 'user', 'content': message_text})
-    
-    # Ограничение длины контекста
-    while len(context_memory[user_id]) > 9:
+    # Ограничение длины контекста через настройку пользователя
+    max_context = user_data[user_id].get('context_size', 21)
+    while len(context_memory[user_id]) > max_context:
         context_memory[user_id].pop(1)
-
     try:
         # Получение ответа от модели
         response = ollama.chat(
@@ -221,13 +223,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             messages=context_memory[user_id],
             options={'temperature': user['temperature']}
         )
-        
         # Добавление ответа в контекст
         context_memory[user_id].append({'role': 'assistant', 'content': response['message']['content']})
-        
         # Отправка ответа пользователю
         await update.message.reply_text(response['message']['content'])
-        
     except Exception as e:
         logging.error(f"Ошибка Ollama: {e}")
         await update.message.reply_text('⚠️ Ошибка генерации ответа')
@@ -235,11 +234,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработка голосовых сообщений"""
     user_id = str(update.effective_user.id)
-    
     if user_id not in user_data or not user_data[user_id]['authenticated']:
         await update.message.reply_text('Введите пароль для доступа!')
         return
-        
     try:
         # Скачивание и конвертация аудио
         voice = update.message.voice
@@ -275,11 +272,9 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработка изображений с использованием Gemma3"""
     user_id = str(update.effective_user.id)
-    
     if user_id not in user_data or not user_data[user_id]['authenticated']:
         await update.message.reply_text('Введите пароль для доступа!')
         return
-        
     try:
         # Получение фото
         photo = update.message.photo[-1]
@@ -311,18 +306,14 @@ async def draw(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Генерация изображений через Stable Diffusion"""
     user_id = str(update.effective_user.id)
     logging.info(f"Draw command from {user_id}")
-    
     if user_id not in user_data or not user_data[user_id]['authenticated']:
         await update.message.reply_text('🔒 Требуется авторизация через /start')
         return
-        
     if not context.args:
         await update.message.reply_text('📝 Формат: /d [описание изображения]')
         return
-        
     prompt = ' '.join(context.args)
     logging.info(f"Генерация для промпта: {prompt}")
-    
     payload = {
         "prompt": prompt,
         "negative_prompt": "text, watermark, low quality",
@@ -334,7 +325,6 @@ async def draw(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             "sd_model_checkpoint": "sdXL_v10VAEFix.safetensors [e6bb9ea85b]"
         }
     }
-    
     try:
         async with aiohttp.ClientSession() as session:
             # Проверка доступности моделей
@@ -382,6 +372,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "/switch [1/2] - Сменить модель\n"
         "/think [0/1] - Включить/выключить режим мышления\n"
         "/temp [0-1] - Установить температуру генерации\n"
+        "/cs [2-50] - Установить размер контекстной памяти\n"
         "/clear - Очистить все данные и выйти\n"
         "/clearc - Очистить контекст диалога\n"
         "/info - Показать информацию о себе\n"
@@ -394,19 +385,17 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработчик команды /clear - очищает данные пользователя и выходит"""
     user_id = str(update.effective_user.id)
-    
     # Удаление данных пользователя
     if user_id in user_data:
         del user_data[user_id]
         save_user_data(user_data)
-    
     # Очистка контекста диалога
     if user_id in context_memory:
         del context_memory[user_id]
-    
     await update.message.reply_text(
         '✅ Все данные очищены. Для продолжения введите /start.'
     )
+
 async def clear_context(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Очистка контекста диалога /clearc"""
     user_id = str(update.effective_user.id)
@@ -431,39 +420,36 @@ async def user_info(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         f"Имя: {user.get('name', 'Не указано')}\n"
         f"Модель: {model_name}\n"
         f"Режим мышления: {think_status}\n"
-        f"Температура генерации: {user['temperature']}"
+        f"Температура генерации: {user['temperature']}\n"
+        f"Размер контекста: {user.get('context_size', 21)}"
     )
     await update.message.reply_text(info_text)
 
 async def change_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработчик команды /changename [новое_имя]"""
     user_id = str(update.effective_user.id)
-    
     # Проверка авторизации
     if user_id not in user_data or not user_data[user_id]['authenticated']:
         await update.message.reply_text('🔒 Сначала авторизуйтесь')
         return
-    
     # Проверка наличия аргумента
     if not context.args:
         await update.message.reply_text('📝 Формат: /changename [ваше_новое_имя]')
         return
-    
     new_name = ' '.join(context.args)
     user_data[user_id]['name'] = new_name
     save_user_data(user_data)
-    
     await update.message.reply_text(f'✅ Имя изменено на: {new_name}')
 
 async def main() -> None:
     """Основная функция запуска бота"""
     application = ApplicationBuilder().token(TOKEN).build()
-    
     # Регистрация обработчиков
     application.add_handler(CommandHandler('start', start))
     application.add_handler(CommandHandler('switch', switch))
     application.add_handler(CommandHandler('think', set_thinking_mode))
     application.add_handler(CommandHandler('temp', set_temperature))
+    application.add_handler(CommandHandler('cs', set_context_size))  # Новая команда
     application.add_handler(CommandHandler('help', help_command))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     application.add_handler(MessageHandler(filters.VOICE, handle_voice))

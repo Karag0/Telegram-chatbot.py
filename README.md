@@ -1,30 +1,49 @@
-## Telegram-chatbot.py
-A Telegram AI Chatbot built with Python, supporting user authentication, model switching, and conversational context memory for seamless interactions.
-Below is an example of a README.md file you might include in your GitHub repository. You can adjust and expand it as needed.
-Telegram Chatbot
+# 🤖 Telegram AI Chatbot with Local LLM Support
 
-# Telegram AI Chatbot with Local LLM Support
+A privacy-focused Telegram bot that runs **100% locally** using open-source AI models. Supports text, voice, and image processing without sending data to external servers.
 
-A privacy-focused Telegram bot that runs 100% locally using open-source AI models. Supports text, voice, and image processing without sending data to external servers.
+---
 
-## 🌟 Key Features
-- **100% Local Execution**: All AI processing happens on your machine
-- **Privacy First**: No cloud dependencies, data never leaves your device
-- **Multimodal Support**:
-  - Text chat with LLMs (Gemma3, Qwen3)
-  - Voice message transcription (Whisper)
-  - Image analysis & generation (Stable Diffusion)
-- **Customizable**:
-  - Switch between models
-  - Adjust temperature & thinking modes
-  - Password-protected access
+## 🔍 Features Overview
 
-## 🔧 Requirements
+| Category          | Feature                          | Description                                                               |
+|-------------------|----------------------------------|---------------------------------------------------------------------------|
+| **Core**          | Local Execution                  | Runs entirely on your machine using Ollama                                |
+|                   | User Authentication              | Password-protected access with personalized sessions                      |
+| **AI Capabilities**| Model Switching                 | Choose between Gemma3 (image support) and Qwen3 (advanced reasoning)      |
+|                   | Context Memory                   | Maintain conversation history (2-50 message pairs)                        |
+|                   | Voice Processing                 | Transcribe voice messages using Whisper                                   |
+| **Multimedia**    | Image Analysis                   | Describe images using Gemma3                                              |
+|                   | Image Generation                 | Create images via Stable Diffusion integration                            |
+| **Customization** | Temperature Control              | Adjust creativity level (0.0-1.0)                                         |
+|                   | Thinking Modes                   | Toggle advanced reasoning mode for Qwen3                                  |
+| **Security**      | Secret Management                | Store token/password in `.env` file                                       |
+|                   | Private Logging                  | Optional message logging for analysis (can be disabled)                   |
+
+---
+
+## 🛠️ Requirements
+
+### System Requirements
 - Python 3.10+
-- Ollama running locally
-- Stable Diffusion WebUI (optional for image generation)
-- Telegram Bot Token (get it from @botFather)
+- At least 16GB RAM (recommended for LLMs)
+- Ollama running locally ([installation guide](https://ollama.ai))
+- Optional: Stable Diffusion WebUI for image generation
 
-## 📦 Dependencies
+### Required Models
 ```bash
-pip install python-telegram-bot ollama faster-whisper pydub pillow
+ollama pull gemma3:12b
+ollama pull qwen3:14b
+📦 Dependencies:
+pip install python-telegram-bot ollama faster-whisper pydub pillow python-dotenv aiohttp nest_asyncio
+🧪 Configuration
+Create .env file like this:
+TOKEN=your_telegram_bot_token
+PASSWORD=your_secure_password
+🚀 Usage:
+python telebot.py
+This project uses open-source components: 
+
+    Ollama (Apache 2.0)
+    Faster-Whisper (MIT)
+    Stable Diffusion (CreativeML Open RAIL++)

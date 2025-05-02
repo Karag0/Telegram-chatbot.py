@@ -13,9 +13,10 @@ import base64
 import tempfile
 import aiohttp
 import asyncio
-
+from dotenv import load_dotenv
 nest_asyncio.apply()
-
+# Загрузка переменных окружения
+load_dotenv()
 # Настройка логирования
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -26,15 +27,19 @@ logging.basicConfig(
 whisper_model = WhisperModel("base", device="cpu", compute_type="int8")
 
 # Токен бота
-TOKEN = '' #Замените на ваш токен
+TOKEN = os.getenv('TOKEN')
 
 # Файл для сохранения данных пользователей
 USER_DATA_FILE = 'user_data.json'
 
 # Системные настройки
 system_prompt = "You're a friendly helpful assistant answering in Russian"
-PASSWORD = "x"  # Пароль для доступа, замените на свой
+# Пароль для доступа
+PASSWORD = os.getenv('PASSWORD')  # Пароль для доступа
 
+# Проверка наличия токена и пароля
+if not TOKEN or not PASSWORD:
+    raise ValueError("❌ Не заданы TOKEN или PASSWORD в .env")
 # Доступные модели Ollama
 MODELS = {
     '1': 'qwen3:14b',  # Теперь по умолчанию

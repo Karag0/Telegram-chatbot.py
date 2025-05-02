@@ -26,14 +26,14 @@ logging.basicConfig(
 whisper_model = WhisperModel("base", device="cpu", compute_type="int8")
 
 # Токен бота
-TOKEN = '' #Замените на ваш токен
+TOKEN = 'x' #Введите ваш токен вместо x
 
 # Файл для сохранения данных пользователей
 USER_DATA_FILE = 'user_data.json'
 
 # Системные настройки
 system_prompt = "You're a friendly helpful assistant answering in Russian"
-PASSWORD = ""  # Пароль для доступа выберите любой
+PASSWORD = "x"  # Пароль для доступа
 
 # Доступные модели Ollama
 MODELS = {
@@ -190,7 +190,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if user.get('name') is None:
         user['name'] = update.message.text
         save_user_data(user_data)
-        await update.message.reply_text(f'👋 Рад знакомству, {user["name"]}!')
+        await update.message.reply_text(f'👋 Рад знакомству, {user["name"]}! Теперь вы можете задавать вопросы или просто общаться со мной!')
         return
 
     # Обработка сообщения
@@ -379,17 +379,32 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     help_text = (
         "Доступные команды:\n"
         "/start - Начать работу (требуется пароль)\n"
-        "/switch [1/2] - Сменить модель (индивидуально для каждого)\n"
+        "/switch [1/2] - Сменить модель\n"
         "/think [0/1] - Включить/выключить режим мышления\n"
         "/temp [0-1] - Установить температуру генерации\n"
-        "/help - Показать справку\n\n"
-        "После авторизации:\n"
-        "• Отправка текстовых сообщений\n"
-        "• Распознавание голосовых сообщений (RU)\n"
-        "• Анализ изображений (Gemma3)\n"
-        "• Сохранение контекста разговора"
+        "/clear - Очистить все данные и выйти\n"  # Новая строка
+        "/help - Показать справку\n"
+        "..."
+
     )
     await update.message.reply_text(help_text)
+
+async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Обработчик команды /clear - очищает данные пользователя и выходит"""
+    user_id = str(update.effective_user.id)
+    
+    # Удаление данных пользователя
+    if user_id in user_data:
+        del user_data[user_id]
+        save_user_data(user_data)
+    
+    # Очистка контекста диалога
+    if user_id in context_memory:
+        del context_memory[user_id]
+    
+    await update.message.reply_text(
+        '✅ Все данные очищены. Для продолжения введите /start.'
+    )
 
 async def main() -> None:
     """Основная функция запуска бота"""
@@ -405,7 +420,7 @@ async def main() -> None:
     application.add_handler(MessageHandler(filters.VOICE, handle_voice))
     application.add_handler(MessageHandler(filters.PHOTO, handle_image))
     application.add_handler(CommandHandler('d', draw))
-    
+    application.add_handler(CommandHandler('clear', clear_command))
     # Запуск бота
     await application.run_polling()
 

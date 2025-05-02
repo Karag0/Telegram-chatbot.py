@@ -1,7 +1,8 @@
 import logging
-from telegram import Update 
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes 
+import json
+import os
 from telegram import Update, InputFile
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 import ollama
 import nest_asyncio
 from faster_whisper import WhisperModel
@@ -10,10 +11,10 @@ from PIL import Image
 import io
 import base64
 import tempfile
-import os
 import aiohttp
-import requests
-nest_asyncio.apply()  # Фикс для работы asyncio в Jupyter/некоторых средах
+import asyncio
+
+nest_asyncio.apply()
 
 # Настройка логирования
 logging.basicConfig(
@@ -24,123 +25,230 @@ logging.basicConfig(
 # Инициализация модели распознавания речи
 whisper_model = WhisperModel("base", device="cpu", compute_type="int8")
 
-# Токен бота (замените на ваш реальный токен)
-TOKEN = 'x'
+# Токен бота
+TOKEN = '' #Замените на ваш токен
 
-# Хранилище данных пользователей
-user_ids = {}  # Сессии пользователей
-context_memory = {}  # История сообщений
+# Файл для сохранения данных пользователей
+USER_DATA_FILE = 'user_data.json'
 
 # Системные настройки
-system_prompt = "ваш системный промт"
-PASSWORD = "x"  # Пароль для доступа
+system_prompt = "You're a friendly helpful assistant answering in Russian"
+PASSWORD = ""  # Пароль для доступа выберите любой
 
 # Доступные модели Ollama
-models = {
-    'model1': 'gemma3:12b',  # Поддерживает обработку изображений [[3]][[8]]
-    'model2': 'qwq:latest'
+MODELS = {
+    '1': 'gemma3:12b',  # Поддерживает обработку изображений
+    '2': 'qwen3:14b'
 }
-current_model = 'model1'  # Модель по умолчанию
 
-# ================================
-# ОСНОВНЫЕ ОБРАБОТЧИКИ КОМАНД
-# ================================
+# Загрузка данных пользователей из файла
+def load_user_data():
+    if os.path.exists(USER_DATA_FILE):
+        try:
+            with open(USER_DATA_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except (json.JSONDecodeError, IOError) as e:
+            logging.warning(f"Ошибка загрузки данных: {e}")
+    return {}
+
+# Сохранение данных пользователей в файл
+def save_user_data(data):
+    try:
+        with open(USER_DATA_FILE, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+    except IOError as e:
+        logging.error(f"Ошибка сохранения данных: {e}")
+
+# Инициализация хранилища данных
+user_data = load_user_data()  # Сессии пользователей
+context_memory = {}  # История сообщений
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработчик команды /start"""
-    await update.message.reply_text('Привет! Я исскуственный интеллект. Введите пароль для доступа:')
+    user_id = str(update.effective_user.id)
+    
+    # Инициализация данных пользователя
+    if user_id not in user_data:
+        user_data[user_id] = {
+            'authenticated': False,
+            'model': '1',
+            'think_mode': False,
+            'temperature': 0.7
+        }
+        save_user_data(user_data)
+    
+    user = user_data[user_id]
+    
+    if user['authenticated']:
+        name = user.get('name', 'пользователь')
+        await update.message.reply_text(f'👋 С возвращением, {name}! Можете задавать вопросы.')
+    else:
+        await update.message.reply_text('🔐 Введите пароль для доступа:')
 
 async def switch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Обработчик смены модели /switch"""
-    global current_model
-    if context.args:
-        model_choice = context.args[0]
-        if model_choice in ['1', '2']:
-            current_model = f'model{model_choice}'
-            await update.message.reply_text(f'Модель изменена на {models[current_model]}')
-        else:
-            await update.message.reply_text('Доступные модели: 1 или 2')
+    """Обработчик смены модели /switch [1/2]"""
+    user_id = str(update.effective_user.id)
+    
+    if user_id not in user_data or not user_data[user_id]['authenticated']:
+        await update.message.reply_text('🔒 Сначала авторизуйтесь')
+        return
+        
+    if not context.args:
+        current_model = user_data[user_id]['model']
+        model_name = MODELS[current_model]
+        await update.message.reply_text(f'🧠 Текущая модель: {model_name}')
+        return
+    
+    model_choice = context.args[0]
+    if model_choice in ['1', '2']:
+        user_data[user_id]['model'] = model_choice
+        save_user_data(user_data)
+        model_name = MODELS[model_choice]
+        await update.message.reply_text(f'✅ Модель изменена на {model_name}')
     else:
-        await update.message.reply_text('Использование: /switch [1/2]')
+        await update.message.reply_text('⚠️ Доступные модели: 1 или 2')
 
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Обработчик помощи /help"""
-    help_text = (
-        "Доступные команды:\n"
-        "/start - Начать работу (требуется пароль)\n"
-        "/switch [1/2] - Сменить модель\n"
-        "/help - Показать справку\n\n"
-        "После авторизации:\n"
-        "• Отправка текстовых сообщений\n"
-        "• Распознавание голосовых сообщений (RU)\n"
-        "• Анализ изображений (Gemma3) [[3]]\n"
-        "• Сохранение контекста разговора"
-    )
-    await update.message.reply_text(help_text)
+async def set_thinking_mode(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Настройка режима мышления через /think [0/1]"""
+    user_id = str(update.effective_user.id)
+    
+    if user_id not in user_data or not user_data[user_id]['authenticated']:
+        await update.message.reply_text('🔒 Сначала авторизуйтесь')
+        return
+        
+    if not context.args:
+        mode = "🧠 Мышление: ВКЛ" if user_data[user_id]['think_mode'] else "🧠 Мышление: ВЫКЛ"
+        await update.message.reply_text(f"{mode}\n\nДля изменения: /think [0/1]")
+        return
+        
+    mode_arg = context.args[0]
+    if mode_arg == '1':
+        user_data[user_id]['think_mode'] = True
+        save_user_data(user_data)
+        await update.message.reply_text('🧠 Режим мышления: ВКЛ')
+    elif mode_arg == '0':
+        user_data[user_id]['think_mode'] = False
+        save_user_data(user_data)
+        await update.message.reply_text('🧠 Режим мышления: ВЫКЛ')
+    else:
+        await update.message.reply_text('⚠️ Неверный аргумент. Используйте:\n/think 0 - выключить\n/think 1 - включить')
 
-# ================================
-# ОБРАБОТЧИКИ СООБЩЕНИЙ
-# ================================
+async def set_temperature(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Настройка температуры генерации"""
+    user_id = str(update.effective_user.id)
+    
+    if user_id not in user_data or not user_data[user_id]['authenticated']:
+        await update.message.reply_text('🔒 Сначала авторизуйтесь')
+        return
+        
+    if not context.args:
+        temp = user_data[user_id]['temperature']
+        await update.message.reply_text(f'🌡️ Текущая температура: {temp}')
+        return
+        
+    try:
+        temp = float(context.args[0])
+        if 0 <= temp <= 1:
+            user_data[user_id]['temperature'] = temp
+            save_user_data(user_data)
+            await update.message.reply_text(f'🌡️ Температура установлена: {temp}')
+        else:
+            await update.message.reply_text('⚠️ Температура должна быть от 0 до 1')
+    except ValueError:
+        await update.message.reply_text('⚠️ Укажите числовое значение')
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработка текстовых сообщений"""
-    user_id = update.effective_user.id
+    user_id = str(update.effective_user.id)
     
     # Инициализация данных пользователя
-    if user_id not in user_ids:
-        user_ids[user_id] = {'authenticated': False}
-        context_memory[user_id] = []
-
-    user_data = user_ids[user_id]
-    message_text = context.user_data.get('voice_text') or update.message.text
-
+    if user_id not in user_data:
+        user_data[user_id] = {
+            'authenticated': False,
+            'model': '1',
+            'think_mode': False,
+            'temperature': 0.7
+        }
+        save_user_data(user_data)
+    
+    user = user_data[user_id]
+    
     # Проверка аутентификации
-    if not user_data['authenticated']:
+    if not user['authenticated']:
+        message_text = update.message.text
         if message_text == PASSWORD:
-            user_data['authenticated'] = True
-            context_memory[user_id].append({'role': 'system', 'content': system_prompt})
-            await update.message.reply_text('Пароль принят! Можете задавать вопросы.')
+            user['authenticated'] = True
+            user['name'] = None  # Флаг для запроса имени
+            context_memory[user_id] = [{'role': 'system', 'content': system_prompt}]
+            save_user_data(user_data)
+            await update.message.reply_text('✅ Пароль принят!\n\n📝 Введите ваше имя:')
         else:
-            await update.message.reply_text('Неверный пароль. Попробуйте снова.')
+            await update.message.reply_text('❌ Неверный пароль')
+        return
+    
+    # Обработка имени
+    if user.get('name') is None:
+        user['name'] = update.message.text
+        save_user_data(user_data)
+        await update.message.reply_text(f'👋 Рад знакомству, {user["name"]}!')
         return
 
-    # Добавление сообщения в контекст
-    context_messages = context_memory[user_id]
-    context_messages.append({'role': 'user', 'content': message_text})
-    context_memory[user_id] = context_messages[-8:]  # Сохраняем последние 8 сообщений
+    # Обработка сообщения
+    message_text = context.user_data.get('voice_text') or update.message.text
+    
+    # Подготовка контекста
+    if user_id not in context_memory:
+        context_memory[user_id] = [{'role': 'system', 'content': system_prompt}]
+    
+    # Добавление метки мышления для Qwen3
+    if user['model'] == '2':  # Qwen3
+        if user['think_mode']:
+            message_text = f"[THINK] {message_text}"
+        else:
+            message_text = f"[NO_THINK] {message_text}"
+    
+    # Обновление контекста
+    context_memory[user_id].append({'role': 'user', 'content': message_text})
+    
+    # Ограничение длины контекста
+    while len(context_memory[user_id]) > 9:
+        context_memory[user_id].pop(1)
 
     try:
-        # Получение ответа от Ollama
+        # Получение ответа от модели
         response = ollama.chat(
-            model=models[current_model],
-            messages=context_memory[user_id]
+            model=MODELS[user['model']],
+            messages=context_memory[user_id],
+            options={'temperature': user['temperature']}
         )
+        
+        # Добавление ответа в контекст
+        context_memory[user_id].append({'role': 'assistant', 'content': response['message']['content']})
+        
+        # Отправка ответа пользователю
         await update.message.reply_text(response['message']['content'])
+        
     except Exception as e:
         logging.error(f"Ошибка Ollama: {e}")
-        await update.message.reply_text('Ошибка генерации ответа. Проверьте логи.')
+        await update.message.reply_text('⚠️ Ошибка генерации ответа')
 
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработка голосовых сообщений"""
-    user_id = update.effective_user.id
+    user_id = str(update.effective_user.id)
     
-    # Проверка аутентификации
-    if not user_ids.get(user_id, {}).get('authenticated', False):
+    if user_id not in user_data or not user_data[user_id]['authenticated']:
         await update.message.reply_text('Введите пароль для доступа!')
         return
-
+        
     try:
         # Скачивание и конвертация аудио
         voice = update.message.voice
         file = await context.bot.get_file(voice.file_id)
-        
         with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as temp_ogg:
             await file.download_to_drive(temp_ogg.name)
-            
             audio = AudioSegment.from_ogg(temp_ogg.name)
             with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_wav:
                 audio.export(temp_wav.name, format="wav", parameters=["-ac", "1", "-ar", "16000"])
-                
                 # Распознавание речи
                 segments, _ = whisper_model.transcribe(
                     temp_wav.name,
@@ -149,42 +257,36 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                     vad_filter=True
                 )
                 text = " ".join([segment.text for segment in segments])
-
         # Удаление временных файлов
         os.unlink(temp_ogg.name)
         os.unlink(temp_wav.name)
-        
         if text.strip():
             # Отправка транскрипта и обработка текста
             await update.message.reply_text(f"📝 Транскрипт:\n{text}")
-            context.user_data['voice_text'] = text  # Передаем текст через контекст
+            context.user_data['voice_text'] = text
             await handle_message(update, context)
-            del context.user_data['voice_text']  # Очистка после использования
+            del context.user_data['voice_text']
         else:
             await update.message.reply_text("Не удалось распознать речь.")
-
     except Exception as e:
         logging.error(f"Ошибка обработки голоса: {e}")
         await update.message.reply_text(f"Произошла ошибка: {str(e)[:100]}")
 
 async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Обработка изображений с использованием Gemma3 [[3]][[8]]"""
-    user_id = update.effective_user.id
+    """Обработка изображений с использованием Gemma3"""
+    user_id = str(update.effective_user.id)
     
-    # Проверка аутентификации
-    if not user_ids.get(user_id, {}).get('authenticated', False):
+    if user_id not in user_data or not user_data[user_id]['authenticated']:
         await update.message.reply_text('Введите пароль для доступа!')
         return
-
+        
     try:
         # Получение фото
-        photo = update.message.photo[-1]  # Самое качественное изображение
+        photo = update.message.photo[-1]
         file = await context.bot.get_file(photo.file_id)
         image_bytes = await file.download_as_bytearray()
-        
-        # Конвертация в base64 для SigLIP-энкодера [[8]]
+        # Конвертация в base64
         image_base64 = base64.b64encode(image_bytes).decode('utf-8')
-        
         # Формирование multimodal-запроса
         context_messages = context_memory.get(user_id, [])
         context_messages.append({
@@ -194,34 +296,33 @@ async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 {'type': 'text', 'text': 'Опиши это изображение'}
             ]
         })
-        
         # Получение ответа от Ollama
         response = ollama.chat(
-            model=models[current_model],
+            model=MODELS[user_data[user_id]['model']],
             messages=context_messages,
-            options={'temperature': 0.7}
+            options={'temperature': user_data[user_id]['temperature']}
         )
-        
         await update.message.reply_text(f"🖼️ Описание изображения:\n{response['message']['content']}")
-        
     except Exception as e:
         logging.error(f"Ошибка обработки изображения: {e}")
         await update.message.reply_text("Не удалось обработать изображение")
-async def draw(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user_id = update.effective_user.id
-    logging.info(f"Draw command from {user_id}")
 
-    if user_id not in user_ids or not user_ids[user_id]['authenticated']:
+async def draw(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Генерация изображений через Stable Diffusion"""
+    user_id = str(update.effective_user.id)
+    logging.info(f"Draw command from {user_id}")
+    
+    if user_id not in user_data or not user_data[user_id]['authenticated']:
         await update.message.reply_text('🔒 Требуется авторизация через /start')
         return
-
+        
     if not context.args:
         await update.message.reply_text('📝 Формат: /d [описание изображения]')
         return
-
+        
     prompt = ' '.join(context.args)
     logging.info(f"Генерация для промпта: {prompt}")
-
+    
     payload = {
         "prompt": prompt,
         "negative_prompt": "text, watermark, low quality",
@@ -233,7 +334,7 @@ async def draw(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             "sd_model_checkpoint": "sdXL_v10VAEFix.safetensors [e6bb9ea85b]"
         }
     }
-
+    
     try:
         async with aiohttp.ClientSession() as session:
             # Проверка доступности моделей
@@ -241,62 +342,70 @@ async def draw(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 if model_check.status != 200:
                     await update.message.reply_text('⚠️ Модель SD не загружена')
                     return
-
             # Основной запрос
             async with session.post(
                 'http://localhost:7860/sdapi/v1/txt2img',
                 json=payload,
                 timeout=300
             ) as response:
-                
                 logging.info(f"API Response: {response.status}")
-                
                 if response.status != 200:
                     error = await response.text()
                     logging.error(f"API Error: {error}")
                     await update.message.reply_text(f'❌ Ошибка API: {response.status}')
                     return
-
                 data = await response.json()
-                
                 if not data.get('images'):
                     await update.message.reply_text('🖼️ Пустой ответ от генератора')
                     return
-
                 image_data = base64.b64decode(data['images'][0])
-                
                 with io.BytesIO() as img_buffer:
                     Image.open(io.BytesIO(image_data)).save(img_buffer, format='PNG')
                     img_buffer.seek(0)
-                    
                     await update.message.reply_photo(
                         photo=InputFile(img_buffer, filename='art.png'),
                         caption=f'🎨 {prompt[:100]}...'
                     )
                     logging.info("Изображение успешно отправлено")
-
     except asyncio.TimeoutError:
         logging.warning("Таймаут генерации")
         await update.message.reply_text('⏳ Слишком долгая генерация, попробуйте позже')
     except Exception as e:
         logging.error(f"Critical Draw Error: {str(e)}", exc_info=True)
         await update.message.reply_text('🔥 Ошибка в процессе генерации')
-# ================================
-# ЗАПУСК БОТА
-# ================================
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Обработчик помощи /help"""
+    help_text = (
+        "Доступные команды:\n"
+        "/start - Начать работу (требуется пароль)\n"
+        "/switch [1/2] - Сменить модель (индивидуально для каждого)\n"
+        "/think [0/1] - Включить/выключить режим мышления\n"
+        "/temp [0-1] - Установить температуру генерации\n"
+        "/help - Показать справку\n\n"
+        "После авторизации:\n"
+        "• Отправка текстовых сообщений\n"
+        "• Распознавание голосовых сообщений (RU)\n"
+        "• Анализ изображений (Gemma3)\n"
+        "• Сохранение контекста разговора"
+    )
+    await update.message.reply_text(help_text)
 
 async def main() -> None:
     """Основная функция запуска бота"""
     application = ApplicationBuilder().token(TOKEN).build()
-
+    
     # Регистрация обработчиков
     application.add_handler(CommandHandler('start', start))
     application.add_handler(CommandHandler('switch', switch))
+    application.add_handler(CommandHandler('think', set_thinking_mode))
+    application.add_handler(CommandHandler('temp', set_temperature))
     application.add_handler(CommandHandler('help', help_command))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     application.add_handler(MessageHandler(filters.VOICE, handle_voice))
-    application.add_handler(MessageHandler(filters.PHOTO, handle_image))  # Новый обработчик
+    application.add_handler(MessageHandler(filters.PHOTO, handle_image))
     application.add_handler(CommandHandler('d', draw))
+    
     # Запуск бота
     await application.run_polling()
 

@@ -26,7 +26,7 @@ logging.basicConfig(
 whisper_model = WhisperModel("base", device="cpu", compute_type="int8")
 
 # Токен бота
-TOKEN = 'x' #Введите ваш токен вместо x
+TOKEN = 'x' #Введите ваш токен
 
 # Файл для сохранения данных пользователей
 USER_DATA_FILE = 'user_data.json'
@@ -382,10 +382,12 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "/switch [1/2] - Сменить модель\n"
         "/think [0/1] - Включить/выключить режим мышления\n"
         "/temp [0-1] - Установить температуру генерации\n"
-        "/clear - Очистить все данные и выйти\n"  # Новая строка
+        "/clear - Очистить все данные и выйти\n"
+        "/clearc - Очистить контекст диалога\n"
+        "/info - Показать информацию о себе\n"
+        "/changename [новое_имя] - Изменить ваше отображаемое имя\n"
         "/help - Показать справку\n"
-        "..."
-
+        "/d [описание] - Сгенерировать изображение"
     )
     await update.message.reply_text(help_text)
 
@@ -405,6 +407,53 @@ async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     await update.message.reply_text(
         '✅ Все данные очищены. Для продолжения введите /start.'
     )
+async def clear_context(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Очистка контекста диалога /clearc"""
+    user_id = str(update.effective_user.id)
+    if user_id not in user_data or not user_data[user_id]['authenticated']:
+        await update.message.reply_text('🔒 Сначала авторизуйтесь')
+        return
+    if user_id in context_memory:
+        del context_memory[user_id]
+    await update.message.reply_text('🧹 Контекст очищен.')
+
+async def user_info(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Показать информацию о пользователе /info"""
+    user_id = str(update.effective_user.id)
+    if user_id not in user_data or not user_data[user_id]['authenticated']:
+        await update.message.reply_text('🔒 Сначала авторизуйтесь')
+        return
+    user = user_data[user_id]
+    model_name = MODELS.get(user['model'], 'Неизвестная модель')
+    think_status = "ВКЛ" if user['think_mode'] else "ВЫКЛ"
+    info_text = (
+        f"ℹ️ Информация о пользователе:\n"
+        f"Имя: {user.get('name', 'Не указано')}\n"
+        f"Модель: {model_name}\n"
+        f"Режим мышления: {think_status}\n"
+        f"Температура генерации: {user['temperature']}"
+    )
+    await update.message.reply_text(info_text)
+
+async def change_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Обработчик команды /changename [новое_имя]"""
+    user_id = str(update.effective_user.id)
+    
+    # Проверка авторизации
+    if user_id not in user_data or not user_data[user_id]['authenticated']:
+        await update.message.reply_text('🔒 Сначала авторизуйтесь')
+        return
+    
+    # Проверка наличия аргумента
+    if not context.args:
+        await update.message.reply_text('📝 Формат: /changename [ваше_новое_имя]')
+        return
+    
+    new_name = ' '.join(context.args)
+    user_data[user_id]['name'] = new_name
+    save_user_data(user_data)
+    
+    await update.message.reply_text(f'✅ Имя изменено на: {new_name}')
 
 async def main() -> None:
     """Основная функция запуска бота"""
@@ -421,6 +470,9 @@ async def main() -> None:
     application.add_handler(MessageHandler(filters.PHOTO, handle_image))
     application.add_handler(CommandHandler('d', draw))
     application.add_handler(CommandHandler('clear', clear_command))
+    application.add_handler(CommandHandler('clearc', clear_context))
+    application.add_handler(CommandHandler('info', user_info))
+    application.add_handler(CommandHandler('changename', change_name))
     # Запуск бота
     await application.run_polling()
 

@@ -16,7 +16,7 @@ from dotenv import load_dotenv
 import aiosqlite
 import bcrypt
 import json
-
+from duckduckgo_search import DDGS
 nest_asyncio.apply()
 
 # Настройка логирования
@@ -177,8 +177,7 @@ async def get_context_messages(user_id: str, max_context: int = 21) -> list:
             rows = await cursor.fetchall()
             return [{'role': role, 'content': content} for role, content in reversed(rows)]
 
-async def clear_context(user_id: str):
-    """Очистка контекста"""
+async def clear_context_data(user_id: str):
     async with aiosqlite.connect(db_path) as db:
         await db.execute('DELETE FROM context WHERE user_id = ?', (user_id,))
         await db.commit()
@@ -601,15 +600,12 @@ async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     await update.message.reply_text('✅ Все данные очищены. Для продолжения введите /start.')
 
 async def clear_context(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Очистка контекста диалога /clearc"""
     user_id = str(update.effective_user.id)
     user = await get_user_data(user_id)
-    
     if not user or not user['authenticated']:
         await update.message.reply_text('🔒 Сначала авторизуйтесь')
         return
-    
-    await clear_context(user_id)
+    await clear_context_data(user_id)
     await update.message.reply_text('🧹 Контекст очищен.')
 
 async def user_info(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

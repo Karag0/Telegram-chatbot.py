@@ -1,5 +1,4 @@
 import logging
-import json
 import os
 from telegram import Update, InputFile
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
@@ -14,75 +13,209 @@ import tempfile
 import aiohttp
 import asyncio
 from dotenv import load_dotenv
+import aiosqlite
+import bcrypt
+import json
+
 nest_asyncio.apply()
-# Загрузка переменных окружения
-load_dotenv()
+
 # Настройка логирования
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
 
+load_dotenv()
+
 # Инициализация модели распознавания речи
-whisper_model = WhisperModel("base", device="cpu", compute_type="int8")
+whisper_model = WhisperModel("medium", device="cpu", compute_type="int8")
 
 # Токен бота
 TOKEN = os.getenv('TOKEN')
-
-# Файл для сохранения данных пользователей
-USER_DATA_FILE = 'user_data.json'
-
-# Системные настройки
-system_prompt = "You're a friendly helpful assistant answering in Russian"
 # Пароль для доступа
 PASSWORD = os.getenv('PASSWORD')  # Пароль для доступа
 
 # Проверка наличия токена и пароля
 if not TOKEN or not PASSWORD:
     raise ValueError("❌ Не заданы TOKEN или PASSWORD в .env")
+
 # Доступные модели Ollama
 MODELS = {
     '1': 'qwen3:14b',  # Теперь по умолчанию
     '2': 'gemma3:12b'
 }
 
-# Загрузка данных пользователей из файла
-def load_user_data():
-    if os.path.exists(USER_DATA_FILE):
-        try:
-            with open(USER_DATA_FILE, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        except (json.JSONDecodeError, IOError) as e:
-            logging.warning(f"Ошибка загрузки данных: {e}")
-    return {}
+# Глобальные переменные
+db_path = 'bot.db'
 
-# Сохранение данных пользователей в файл
-def save_user_data(data):
-    try:
-        with open(USER_DATA_FILE, 'w', encoding='utf-8') as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
-    except IOError as e:
-        logging.error(f"Ошибка сохранения данных: {e}")
+async def init_db():
+    """Инициализация базы данных"""
+    async with aiosqlite.connect(db_path) as db:
+        # Создание таблицы пользователей
+        await db.execute('''
+            CREATE TABLE IF NOT EXISTS users (
+                user_id TEXT PRIMARY KEY,
+                authenticated BOOLEAN,
+                model TEXT,
+                think_mode BOOLEAN,
+                temperature REAL,
+                context_size INTEGER,
+                name TEXT,
+                password_hash TEXT
+            )
+        ''')
+        
+        # Создание таблицы контекста
+        await db.execute('''
+            CREATE TABLE IF NOT EXISTS context (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id TEXT,
+                role TEXT,
+                content TEXT,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(user_id) REFERENCES users(user_id)
+            )
+        ''')
+        
+        # Создание таблицы системных промптов
+        await db.execute('''
+            CREATE TABLE IF NOT EXISTS system_prompt (
+                id INTEGER PRIMARY KEY,
+                prompt TEXT
+            )
+        ''')
+        
+        # Проверка наличия системного промпта
+        async with db.execute('SELECT prompt FROM system_prompt WHERE id = 1') as cursor:
+            result = await cursor.fetchone()
+            if not result:
+                await db.execute('INSERT INTO system_prompt (id, prompt) VALUES (1, ?)', 
+                               ("You're a friendly helpful assistant answering in Russian, you running locally",))
+        
+        await db.commit()
 
-# Инициализация хранилища данных
-user_data = load_user_data()  # Сессии пользователей
-context_memory = {}  # История сообщений
+async def hash_password(password: str) -> str:
+    """Хеширование пароля"""
+    loop = asyncio.get_event_loop()
+    hashed = await loop.run_in_executor(None, bcrypt.hashpw, password.encode(), bcrypt.gensalt())
+    return hashed.decode()
+
+async def check_password(password: str, hashed: str) -> bool:
+    """Проверка пароля"""
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, bcrypt.checkpw, password.encode(), hashed.encode())
+
+async def get_user_data(user_id: str) -> dict:
+    """Получение данных пользователя из БД"""
+    async with aiosqlite.connect(db_path) as db:
+        async with db.execute('SELECT * FROM users WHERE user_id = ?', (user_id,)) as cursor:
+            row = await cursor.fetchone()
+            if row:
+                return {
+                    'authenticated': bool(row[1]),
+                    'model': row[2],
+                    'think_mode': bool(row[3]),
+                    'temperature': row[4],
+                    'context_size': row[5],
+                    'name': row[6]
+                }
+            return None
+
+async def save_user_data(user_id: str, data: dict):
+    """Сохранение данных пользователя в БД"""
+    async with aiosqlite.connect(db_path) as db:
+        # Если пользователь существует - обновляем, иначе создаем
+        async with db.execute('SELECT user_id FROM users WHERE user_id = ?', (user_id,)) as cursor:
+            exists = await cursor.fetchone()
+        
+        if exists:
+            await db.execute('''
+                UPDATE users SET 
+                authenticated = ?, model = ?, think_mode = ?, 
+                temperature = ?, context_size = ?, name = ?
+                WHERE user_id = ?
+            ''', (
+                data['authenticated'], data['model'], data['think_mode'],
+                data['temperature'], data['context_size'], data['name'], user_id
+            ))
+        else:
+            await db.execute('''
+                INSERT INTO users 
+                (user_id, authenticated, model, think_mode, temperature, context_size, name)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                user_id, data['authenticated'], data['model'], data['think_mode'],
+                data['temperature'], data['context_size'], data['name']
+            ))
+        
+        await db.commit()
+
+async def get_system_prompt() -> str:
+    """Получение системного промпта"""
+    async with aiosqlite.connect(db_path) as db:
+        async with db.execute('SELECT prompt FROM system_prompt WHERE id = 1') as cursor:
+            result = await cursor.fetchone()
+            return result[0] if result else ""
+
+async def add_context_message(user_id: str, role: str, content: str):
+    """Добавление сообщения в контекст"""
+    async with aiosqlite.connect(db_path) as db:
+        await db.execute(
+            'INSERT INTO context (user_id, role, content) VALUES (?, ?, ?)',
+            (user_id, role, content)
+        )
+        await db.commit()
+
+async def get_context_messages(user_id: str, max_context: int = 21) -> list:
+    """Получение последних сообщений контекста"""
+    async with aiosqlite.connect(db_path) as db:
+        async with db.execute('''
+            SELECT role, content FROM context 
+            WHERE user_id = ? 
+            ORDER BY timestamp DESC LIMIT ?
+        ''', (user_id, max_context)) as cursor:
+            rows = await cursor.fetchall()
+            return [{'role': role, 'content': content} for role, content in reversed(rows)]
+
+async def clear_context(user_id: str):
+    """Очистка контекста"""
+    async with aiosqlite.connect(db_path) as db:
+        await db.execute('DELETE FROM context WHERE user_id = ?', (user_id,))
+        await db.commit()
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработчик команды /start"""
     user_id = str(update.effective_user.id)
+    
     # Инициализация данных пользователя
-    if user_id not in user_data:
-        user_data[user_id] = {
-            'authenticated': False,
-            'model': '1',
-            'think_mode': False,
-            'temperature': 0.7,
-            'context_size': 21  # Новое поле
-        }
-        save_user_data(user_data)
-    user = user_data[user_id]
-    if user['authenticated']:
+    user = await get_user_data(user_id)
+    
+    if not user:
+        # Создаем нового пользователя
+        password_hash = await hash_password(PASSWORD)
+        await save_user_data(
+            user_id,
+            {
+                'authenticated': False,
+                'model': '1',
+                'think_mode': False,
+                'temperature': 0.7,
+                'context_size': 21,
+                'name': None
+            }
+        )
+        
+        # Сохраняем хеш пароля
+        async with aiosqlite.connect(db_path) as db:
+            await db.execute(
+                'UPDATE users SET password_hash = ? WHERE user_id = ?',
+                (password_hash, user_id)
+            )
+            await db.commit()
+    
+    user = await get_user_data(user_id)
+    
+    if user and user['authenticated']:
         name = user.get('name', 'пользователь')
         await update.message.reply_text(f'👋 С возвращением, {name}! Можете задавать вопросы.')
     else:
@@ -91,18 +224,21 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def switch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработчик смены модели /switch [1/2]"""
     user_id = str(update.effective_user.id)
-    if user_id not in user_data or not user_data[user_id]['authenticated']:
+    user = await get_user_data(user_id)
+    
+    if not user or not user['authenticated']:
         await update.message.reply_text('🔒 Сначала авторизуйтесь')
         return
+    
     if not context.args:
-        current_model = user_data[user_id]['model']
-        model_name = MODELS[current_model]
+        model_name = MODELS[user['model']]
         await update.message.reply_text(f'🧠 Текущая модель: {model_name}')
         return
+    
     model_choice = context.args[0]
     if model_choice in ['1', '2']:
-        user_data[user_id]['model'] = model_choice
-        save_user_data(user_data)
+        user['model'] = model_choice
+        await save_user_data(user_id, user)
         model_name = MODELS[model_choice]
         await update.message.reply_text(f'✅ Модель изменена на {model_name}')
     else:
@@ -111,21 +247,25 @@ async def switch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def set_thinking_mode(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Настройка режима мышления через /think [0/1]"""
     user_id = str(update.effective_user.id)
-    if user_id not in user_data or not user_data[user_id]['authenticated']:
+    user = await get_user_data(user_id)
+    
+    if not user or not user['authenticated']:
         await update.message.reply_text('🔒 Сначала авторизуйтесь')
         return
+    
     if not context.args:
-        mode = "🧠 Мышление: ВКЛ" if user_data[user_id]['think_mode'] else "🧠 Мышление: ВЫКЛ"
+        mode = "🧠 Мышление: ВКЛ" if user['think_mode'] else "🧠 Мышление: ВЫКЛ"
         await update.message.reply_text(f"{mode}\nДля изменения: /think [0/1]")
         return
+    
     mode_arg = context.args[0]
     if mode_arg == '1':
-        user_data[user_id]['think_mode'] = True
-        save_user_data(user_data)
+        user['think_mode'] = True
+        await save_user_data(user_id, user)
         await update.message.reply_text('🧠 Режим мышления: ВКЛ')
     elif mode_arg == '0':
-        user_data[user_id]['think_mode'] = False
-        save_user_data(user_data)
+        user['think_mode'] = False
+        await save_user_data(user_id, user)
         await update.message.reply_text('🧠 Режим мышления: ВЫКЛ')
     else:
         await update.message.reply_text('⚠️ Неверный аргумент. Используйте:\n/think 0 - выключить\n/think 1 - включить')
@@ -133,18 +273,22 @@ async def set_thinking_mode(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 async def set_temperature(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Настройка температуры генерации"""
     user_id = str(update.effective_user.id)
-    if user_id not in user_data or not user_data[user_id]['authenticated']:
+    user = await get_user_data(user_id)
+    
+    if not user or not user['authenticated']:
         await update.message.reply_text('🔒 Сначала авторизуйтесь')
         return
+    
     if not context.args:
-        temp = user_data[user_id]['temperature']
+        temp = user['temperature']
         await update.message.reply_text(f'🌡️ Текущая температура: {temp}')
         return
+    
     try:
         temp = float(context.args[0])
         if 0 <= temp <= 1:
-            user_data[user_id]['temperature'] = temp
-            save_user_data(user_data)
+            user['temperature'] = temp
+            await save_user_data(user_id, user)
             await update.message.reply_text(f'🌡️ Температура установлена: {temp}')
         else:
             await update.message.reply_text('⚠️ Температура должна быть от 0 до 1')
@@ -154,82 +298,122 @@ async def set_temperature(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 async def set_context_size(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Настройка размера контекстной памяти /cs [2-50]"""
     user_id = str(update.effective_user.id)
-    if user_id not in user_data or not user_data[user_id]['authenticated']:
+    user = await get_user_data(user_id)
+    
+    if not user or not user['authenticated']:
         await update.message.reply_text('🔒 Сначала авторизуйтесь')
         return
+    
     if not context.args:
-        size = user_data[user_id]['context_size']
+        size = user['context_size']
         await update.message.reply_text(f'💾 Размер контекста: {size}')
         return
+    
     try:
         new_size = int(context.args[0])
         if 2 <= new_size <= 50:
-            user_data[user_id]['context_size'] = new_size
-            save_user_data(user_data)
+            user['context_size'] = new_size
+            await save_user_data(user_id, user)
             await update.message.reply_text(f'✅ Размер контекста изменен на {new_size}')
         else:
             await update.message.reply_text('⚠️ Допустимый диапазон: от 2 до 50')
     except ValueError:
         await update.message.reply_text('⚠️ Укажите числовое значение')
 
+async def get_user_password_hash(user_id: str) -> str:
+    """Получение хеша пароля пользователя"""
+    async with aiosqlite.connect(db_path) as db:
+        async with db.execute('SELECT password_hash FROM users WHERE user_id = ?', (user_id,)) as cursor:
+            result = await cursor.fetchone()
+            return result[0] if result else ""
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработка текстовых сообщений"""
     user_id = str(update.effective_user.id)
+    
     # Инициализация данных пользователя
-    if user_id not in user_data:
-        user_data[user_id] = {
+    user = await get_user_data(user_id)
+    
+    if not user:
+        # Создаем нового пользователя
+        password_hash = await hash_password(PASSWORD)
+        user_data = {
             'authenticated': False,
             'model': '1',
             'think_mode': False,
             'temperature': 0.7,
-            'context_size': 21
+            'context_size': 21,
+            'name': None
         }
-        save_user_data(user_data)
-    user = user_data[user_id]
+        await save_user_data(user_id, user_data)
+        
+        # Сохраняем хеш пароля
+        async with aiosqlite.connect(db_path) as db:
+            await db.execute(
+                'UPDATE users SET password_hash = ? WHERE user_id = ?',
+                (password_hash, user_id)
+            )
+            await db.commit()
+    
+    user = await get_user_data(user_id)
+    
     # Проверка аутентификации
     if not user['authenticated']:
         message_text = update.message.text
-        if message_text == PASSWORD:
+        password_hash = await get_user_password_hash(user_id)
+        
+        if await check_password(message_text, password_hash):
             user['authenticated'] = True
             user['name'] = None  # Флаг для запроса имени
-            context_memory[user_id] = [{'role': 'system', 'content': system_prompt}]
-            save_user_data(user_data)
+            await save_user_data(user_id, user)
+            
+            # Добавляем системный промпт в контекст
+            system_prompt = await get_system_prompt()
+            await add_context_message(user_id, 'system', system_prompt)
+            
             await update.message.reply_text('✅ Пароль принят!\n📝 Введите ваше имя:')
         else:
             await update.message.reply_text('❌ Неверный пароль')
         return
+    
     # Обработка имени
     if user.get('name') is None:
         user['name'] = update.message.text
-        save_user_data(user_data)
+        await save_user_data(user_id, user)
         await update.message.reply_text(f'👋 Рад знакомству, {user["name"]}! Теперь вы можете задавать вопросы или просто общаться со мной!')
         return
+    
     # Обработка сообщения
     message_text = context.user_data.get('voice_text') or update.message.text
+    
     # Подготовка контекста
-    if user_id not in context_memory:
-        context_memory[user_id] = [{'role': 'system', 'content': system_prompt}]
+    system_prompt = await get_system_prompt()
+    context_messages = await get_context_messages(user_id, user['context_size'])
+    
     # Добавление метки мышления для Qwen3
     if user['model'] == '1':  # Qwen3
         if user['think_mode']:
             message_text = f"[THINK] {message_text}"
         else:
             message_text = f"[NO_THINK] {message_text}"
-    # Обновление контекста
-    context_memory[user_id].append({'role': 'user', 'content': message_text})
-    # Ограничение длины контекста через настройку пользователя
-    max_context = user_data[user_id].get('context_size', 21)
-    while len(context_memory[user_id]) > max_context:
-        context_memory[user_id].pop(1)
+    
+    # Добавляем сообщение пользователя
+    context_messages.append({'role': 'user', 'content': message_text})
+    
     try:
         # Получение ответа от модели
-        response = ollama.chat(
-            model=MODELS[user['model']],
-            messages=context_memory[user_id],
-            options={'temperature': user['temperature']}
+        response = await asyncio.get_event_loop().run_in_executor(
+            None, 
+            lambda: ollama.chat(
+                model=MODELS[user['model']],
+                messages=context_messages,
+                options={'temperature': user['temperature']}
+            )
         )
+        
         # Добавление ответа в контекст
-        context_memory[user_id].append({'role': 'assistant', 'content': response['message']['content']})
+        await add_context_message(user_id, 'assistant', response['message']['content'])
+        
         # Отправка ответа пользователю
         await update.message.reply_text(response['message']['content'])
     except Exception as e:
@@ -239,9 +423,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработка голосовых сообщений"""
     user_id = str(update.effective_user.id)
-    if user_id not in user_data or not user_data[user_id]['authenticated']:
+    user = await get_user_data(user_id)
+    
+    if not user or not user['authenticated']:
         await update.message.reply_text('Введите пароль для доступа!')
         return
+    
     try:
         # Скачивание и конвертация аудио
         voice = update.message.voice
@@ -277,9 +464,12 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработка изображений с использованием Gemma3"""
     user_id = str(update.effective_user.id)
-    if user_id not in user_data or not user_data[user_id]['authenticated']:
+    user = await get_user_data(user_id)
+    
+    if not user or not user['authenticated']:
         await update.message.reply_text('Введите пароль для доступа!')
         return
+    
     try:
         # Получение фото
         photo = update.message.photo[-1]
@@ -288,7 +478,7 @@ async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         # Конвертация в base64
         image_base64 = base64.b64encode(image_bytes).decode('utf-8')
         # Формирование multimodal-запроса
-        context_messages = context_memory.get(user_id, [])
+        context_messages = await get_context_messages(user_id, user['context_size'])
         context_messages.append({
             'role': 'user',
             'content': [
@@ -297,10 +487,13 @@ async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             ]
         })
         # Получение ответа от Ollama
-        response = ollama.chat(
-            model=MODELS[user_data[user_id]['model']],
-            messages=context_messages,
-            options={'temperature': user_data[user_id]['temperature']}
+        response = await asyncio.get_event_loop().run_in_executor(
+            None, 
+            lambda: ollama.chat(
+                model=MODELS[user['model']],
+                messages=context_messages,
+                options={'temperature': user['temperature']}
+            )
         )
         await update.message.reply_text(f"🖼️ Описание изображения:\n{response['message']['content']}")
     except Exception as e:
@@ -311,14 +504,19 @@ async def draw(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Генерация изображений через Stable Diffusion"""
     user_id = str(update.effective_user.id)
     logging.info(f"Draw command from {user_id}")
-    if user_id not in user_data or not user_data[user_id]['authenticated']:
+    user = await get_user_data(user_id)
+    
+    if not user or not user['authenticated']:
         await update.message.reply_text('🔒 Требуется авторизация через /start')
         return
+    
     if not context.args:
         await update.message.reply_text('📝 Формат: /d [описание изображения]')
         return
+    
     prompt = ' '.join(context.args)
     logging.info(f"Генерация для промпта: {prompt}")
+    
     payload = {
         "prompt": prompt,
         "negative_prompt": "text, watermark, low quality",
@@ -330,6 +528,7 @@ async def draw(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             "sd_model_checkpoint": "sdXL_v10VAEFix.safetensors [e6bb9ea85b]"
         }
     }
+    
     try:
         async with aiohttp.ClientSession() as session:
             # Проверка доступности моделей
@@ -337,6 +536,7 @@ async def draw(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 if model_check.status != 200:
                     await update.message.reply_text('⚠️ Модель SD не загружена')
                     return
+            
             # Основной запрос
             async with session.post(
                 'http://localhost:7860/sdapi/v1/txt2img',
@@ -349,10 +549,12 @@ async def draw(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                     logging.error(f"API Error: {error}")
                     await update.message.reply_text(f'❌ Ошибка API: {response.status}')
                     return
+                
                 data = await response.json()
                 if not data.get('images'):
                     await update.message.reply_text('🖼️ Пустой ответ от генератора')
                     return
+                
                 image_data = base64.b64decode(data['images'][0])
                 with io.BytesIO() as img_buffer:
                     Image.open(io.BytesIO(image_data)).save(img_buffer, format='PNG')
@@ -362,9 +564,11 @@ async def draw(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                         caption=f'🎨 {prompt[:100]}...'
                     )
                     logging.info("Изображение успешно отправлено")
+    
     except asyncio.TimeoutError:
         logging.warning("Таймаут генерации")
         await update.message.reply_text('⏳ Слишком долгая генерация, попробуйте позже')
+    
     except Exception as e:
         logging.error(f"Critical Draw Error: {str(e)}", exc_info=True)
         await update.message.reply_text('🔥 Ошибка в процессе генерации')
@@ -390,34 +594,33 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработчик команды /clear - очищает данные пользователя и выходит"""
     user_id = str(update.effective_user.id)
-    # Удаление данных пользователя
-    if user_id in user_data:
-        del user_data[user_id]
-        save_user_data(user_data)
-    # Очистка контекста диалога
-    if user_id in context_memory:
-        del context_memory[user_id]
-    await update.message.reply_text(
-        '✅ Все данные очищены. Для продолжения введите /start.'
-    )
+    async with aiosqlite.connect(db_path) as db:
+        await db.execute('DELETE FROM users WHERE user_id = ?', (user_id,))
+        await db.execute('DELETE FROM context WHERE user_id = ?', (user_id,))
+        await db.commit()
+    await update.message.reply_text('✅ Все данные очищены. Для продолжения введите /start.')
 
 async def clear_context(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Очистка контекста диалога /clearc"""
     user_id = str(update.effective_user.id)
-    if user_id not in user_data or not user_data[user_id]['authenticated']:
+    user = await get_user_data(user_id)
+    
+    if not user or not user['authenticated']:
         await update.message.reply_text('🔒 Сначала авторизуйтесь')
         return
-    if user_id in context_memory:
-        del context_memory[user_id]
+    
+    await clear_context(user_id)
     await update.message.reply_text('🧹 Контекст очищен.')
 
 async def user_info(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Показать информацию о пользователе /info"""
     user_id = str(update.effective_user.id)
-    if user_id not in user_data or not user_data[user_id]['authenticated']:
+    user = await get_user_data(user_id)
+    
+    if not user or not user['authenticated']:
         await update.message.reply_text('🔒 Сначала авторизуйтесь')
         return
-    user = user_data[user_id]
+    
     model_name = MODELS.get(user['model'], 'Неизвестная модель')
     think_status = "ВКЛ" if user['think_mode'] else "ВЫКЛ"
     info_text = (
@@ -433,28 +636,34 @@ async def user_info(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def change_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработчик команды /changename [новое_имя]"""
     user_id = str(update.effective_user.id)
-    # Проверка авторизации
-    if user_id not in user_data or not user_data[user_id]['authenticated']:
+    user = await get_user_data(user_id)
+    
+    if not user or not user['authenticated']:
         await update.message.reply_text('🔒 Сначала авторизуйтесь')
         return
-    # Проверка наличия аргумента
+    
     if not context.args:
         await update.message.reply_text('📝 Формат: /changename [ваше_новое_имя]')
         return
+    
     new_name = ' '.join(context.args)
-    user_data[user_id]['name'] = new_name
-    save_user_data(user_data)
+    user['name'] = new_name
+    await save_user_data(user_id, user)
     await update.message.reply_text(f'✅ Имя изменено на: {new_name}')
 
 async def main() -> None:
     """Основная функция запуска бота"""
+    # Инициализация базы данных
+    await init_db()
+    
     application = ApplicationBuilder().token(TOKEN).build()
+    
     # Регистрация обработчиков
     application.add_handler(CommandHandler('start', start))
     application.add_handler(CommandHandler('switch', switch))
     application.add_handler(CommandHandler('think', set_thinking_mode))
     application.add_handler(CommandHandler('temp', set_temperature))
-    application.add_handler(CommandHandler('cs', set_context_size))  # Новая команда
+    application.add_handler(CommandHandler('cs', set_context_size))
     application.add_handler(CommandHandler('help', help_command))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     application.add_handler(MessageHandler(filters.VOICE, handle_voice))
@@ -464,9 +673,9 @@ async def main() -> None:
     application.add_handler(CommandHandler('clearc', clear_context))
     application.add_handler(CommandHandler('info', user_info))
     application.add_handler(CommandHandler('changename', change_name))
+    
     # Запуск бота
     await application.run_polling()
 
 if __name__ == '__main__':
-    import asyncio
     asyncio.run(main())

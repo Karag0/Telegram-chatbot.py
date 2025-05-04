@@ -18,7 +18,6 @@ A privacy-focused Telegram bot that runs **100% locally** using open-source AI m
 | **Customization** | Temperature Control              | Adjust creativity level (0.0-1.0)                                         |
 |                   | Thinking Modes                   | Toggle advanced reasoning mode for Qwen3                                  |
 | **Security**      | Secret Management                | Store token/password in `.env` file                                       |
-|                   | Private Logging                  | Optional message logging for analysis (can be disabled)                   |
 
 ---
 

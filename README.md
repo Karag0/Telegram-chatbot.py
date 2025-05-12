@@ -45,4 +45,4 @@ This project uses open-source components:
 
     Ollama (Apache 2.0)
     Faster-Whisper (MIT)
-    Stable Diffusion (CreativeML Open RAIL++)
+    Stable Diffusion (AGPL-3.0 license)

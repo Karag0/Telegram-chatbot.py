@@ -34,14 +34,19 @@ A privacy-focused Telegram bot that runs **100% locally** using open-source AI m
 ollama pull qwen3:14b
 📦 Dependencies:
 pip install python-telegram-bot ollama faster-whisper pydub pillow python-dotenv aiohttp nest_asyncio
+```
 🧪 Configuration
-Create .env file like this:
+Fill .env file with :
 TOKEN=your_telegram_bot_token
 PASSWORD=your_secure_password
-🚀 Usage:
-python telebot.py
-This project uses open-source components: 
 
+🚀 Usage:
+```bash
+python telebot.py
+```
+---
+This project uses open-source components:
+#
     Ollama (MIT)
     Faster-Whisper (MIT)
-stable-diffusion-webui (AGPL-3.0 license)
+    stable-diffusion-webui (AGPL-3.0 license)

@@ -25,7 +25,7 @@ A privacy-focused Telegram bot that runs **100% locally** using open-source AI m
 
 ### System Requirements
 - Python 3.10+
-- At least 16GB RAM (recommended for LLMs)
+- At least 16 GB RAM, 32 Is reccomended
 - Ollama running locally ([installation guide](https://ollama.ai))
 - Optional: Stable Diffusion WebUI for image generation
 

@@ -1,15 +1,14 @@
 # Используем официальный образ Arch Linux
 FROM archlinux:latest
 
-# Обновляем систему и устанавливаем зависимости
 RUN pacman -Syu --noconfirm && \
     pacman -S --noconfirm \
     ollama \
-    python-uv \  # Пакет называется именно так в Arch
-ffmpeg \
+    python-uv \
+    ffmpeg \
     bash \
-    python \     # Python 3.12 по умолчанию в Arch
-base-devel   # Для компиляции пакетов (удалится позже)
+    python \
+    base-devel
 
 # Рабочая директория
 WORKDIR /app
@@ -18,13 +17,15 @@ WORKDIR /app
 COPY requirements.txt .
 
 # Создаём виртуальное окружение через uv
-# В Arch python = Python 3.12, поэтому используем просто "python"
-RUN uv venv .venv --python python3.12
+# Используем явный путь к python3.12 (гарантированно найдёт нужную версию)
+RUN uv venv .venv --python /usr/bin/python3.12
 
-# Активируем venv и устанавливаем зависимости
-# (без --system, так как работаем внутри venv)
-RUN ./.venv/bin/activate
-RUN uv pip install -r requirements.txt
+# Устанавливаем зависимости через uv ВНУТРИ venv
+# Ключевой момент: --python указывает на созданное окружение
+RUN uv pip install --python .venv -r requirements.txt
+
+# Удаляем временные зависимости для компиляции
+RUN pacman -Rns --noconfirm base-devel --noconfirm
 
 # Копируем исходный код
 COPY . .
@@ -32,6 +33,6 @@ COPY . .
 # Создаём директории для данных
 RUN mkdir -p /app/data
 
-# Запускаем Ollama и бота
-# Важно: используем exec-форму для корректной обработки сигналов
-CMD [ "bash", "-c", "ollama serve & python telebot.py" ]
+# Запускаем Ollama и бота через uv run
+# uv автоматически использует .venv из текущей директории
+CMD [ "bash", "-c", "ollama serve & uv run telebot.py" ]

@@ -18,7 +18,7 @@ COPY requirements.txt .
 
 # Создаём виртуальное окружение через uv
 # Используем явный путь к python3.12 (гарантированно найдёт нужную версию)
-RUN uv venv .venv --python /usr/bin/python3.12
+RUN uv venv .venv --python python3.12
 
 # Устанавливаем зависимости через uv ВНУТРИ venv
 # Ключевой момент: --python указывает на созданное окружение

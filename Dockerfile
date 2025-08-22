@@ -19,9 +19,9 @@ RUN apk add --no-cache --virtual .build-deps \
 # Рабочая директория
 WORKDIR /app
 
-# Копируем и устанавливаем Python зависимости
+# Копируем и устанавливаем Python зависимости с использованием --system
 COPY requirements.txt .
-RUN uv pip install -r requirements.txt
+RUN uv pip install --system -r requirements.txt
 
 # Удаляем временные зависимости для сборки
 RUN apk del .build-deps

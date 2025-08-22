@@ -1,37 +1,37 @@
-FROM python:3.11-alpine
+# Используем официальный образ Arch Linux
+FROM archlinux:latest
 
-# Добавляем репозитории community
-RUN echo "http://dl-cdn.alpinelinux.org/alpine/edge/community" >> /etc/apk/repositories
-
-# Обновляем и устанавливаем системные зависимости
-RUN apk update && apk upgrade && \
-    apk add --no-cache \
+# Обновляем систему и устанавливаем зависимости
+RUN pacman -Syu --noconfirm && \
+    pacman -S --noconfirm \
     ollama \
-    uv \
-    ffmpeg \
-    bash
-
-# Устанавливаем дополнительные зависимости для Python пакетов
-RUN apk add --no-cache --virtual .build-deps \
-    build-base \
-    python3-dev
+    python-uv \  # Пакет называется именно так в Arch
+ffmpeg \
+    bash \
+    python \     # Python 3.12 по умолчанию в Arch
+base-devel   # Для компиляции пакетов (удалится позже)
 
 # Рабочая директория
 WORKDIR /app
 
-# Копируем и устанавливаем Python зависимости с использованием --system
+# Копируем requirements.txt
 COPY requirements.txt .
-RUN uv pip install --system -r requirements.txt
 
-# Удаляем временные зависимости для сборки
-RUN apk del .build-deps
+# Создаём виртуальное окружение через uv
+# В Arch python = Python 3.12, поэтому используем просто "python"
+RUN uv venv .venv --python python3.12
+
+# Активируем venv и устанавливаем зависимости
+# (без --system, так как работаем внутри venv)
+RUN ./.venv/bin/activate
+RUN uv pip install -r requirements.txt
 
 # Копируем исходный код
 COPY . .
 
-# Создаем директории для данных
+# Создаём директории для данных
 RUN mkdir -p /app/data
 
-
-# Запускаем Ollama и бота параллельно
-CMD bash -c "ollama serve & python telebot.py"
+# Запускаем Ollama и бота
+# Важно: используем exec-форму для корректной обработки сигналов
+CMD [ "bash", "-c", "ollama serve & python telebot.py" ]

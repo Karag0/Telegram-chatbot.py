@@ -46,4 +46,4 @@ CMD ollama serve & \
     sleep 10 && \
     ollama pull qwen3:14b && \
     ollama pull gemma3:12b && \
-    python -m main
+    python telebot.py

@@ -1,0 +1,8 @@
+python-telegram-bot
+ollama
+faster-whisper
+pydub
+Pillow
+aiohttp
+nest_asyncio
+python-dotenv

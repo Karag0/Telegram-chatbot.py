@@ -27,4 +27,4 @@ RUN mkdir -p /app/data
 
 # Запускаем Ollama и бота через uv run
 # uv автоматически использует .venv из текущей директории
-CMD [ "bash", "-c", "ollama serve & ollama pull qwen3:14b & ollama pull gemma3:12b uv run telebot.py" ]
+CMD [ "bash", "-c", "ollama serve & ollama pull qwen3:14b & ollama pull gemma3:12b uv run main.py" ]
